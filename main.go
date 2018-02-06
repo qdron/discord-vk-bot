@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
@@ -15,38 +16,108 @@ import (
 
 // User type from VK api
 type User struct {
-	ID        string `json:"id"`
+	ID        int64  `json:"id"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
+	Photo50   string `json:"photo_50"`
+	FromID    int64  `json:"from_id"`
 }
 
 // UserList type from VK api
 type UserList struct {
-	Response []User `json:"responce"`
+	Response []User `json:"response"`
+}
+
+// GroupData type from VK API
+type GroupData struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Photo50 string `json:"photo_50"`
+}
+
+// GroupListData type from VK API
+type GroupListData struct {
+	Response []GroupData `json:"response"`
 }
 
 // Variables used for command line parameters
 var (
-	DiscordToken string
+	discordToken string
 	VkToken      string
-	ChannelID    string
+	channelID    string
+	api          *vk.VK
+	groupID      string
 )
 
 func init() {
 	log.Println("Init")
 
-	flag.StringVar(&DiscordToken, "dt", "", "Discord authentication token")
-	flag.StringVar(&VkToken, "vt", "", "Vk token")
-	flag.StringVar(&ChannelID, "dcid", "", "Channel ID in Discord")
+	flag.StringVar(&VkToken, "vk_token", "", "Vk token")
+	flag.StringVar(&groupID, "vk_groupid", "", "VK group id")
+	flag.StringVar(&discordToken, "discord_token", "", "Discord authentication token")
+	flag.StringVar(&channelID, "discord_channelid", "", "Channel ID in Discord")
 	flag.Parse()
 
-	log.Println(DiscordToken)
+	log.Println(discordToken)
+}
+
+// Get User stuct by user ID
+func getUser(userID string) (User, error) {
+	var err error
+	var userData []byte
+	if userID == "" {
+		userData, err = api.CallMethod("users.get", vk.RequestParams{
+			"fields": "photo_50, from_id",
+		})
+	} else {
+		userData, err = api.CallMethod("users.get", vk.RequestParams{
+			"user_ids": userID,
+			"fields":   "photo_50, from_id",
+		})
+	}
+
+	if err != nil {
+		return User{}, err
+	}
+
+	log.Println(string(userData))
+	res := UserList{}
+	if err = json.Unmarshal(userData, &res); err != nil {
+		log.Errorf("Decoding JSON. %s", err)
+		return User{}, err
+	}
+
+	return res.Response[0], err
+}
+
+func getGroupByID(groupID string) (GroupData, error) {
+	var err error
+	var data []byte
+	data, err = api.CallMethod("groups.getById", vk.RequestParams{
+		"group_id": groupID,
+	})
+	if err != nil {
+		return GroupData{}, err
+	}
+
+	log.Debug(string(data))
+	res := GroupListData{}
+	if err = json.Unmarshal(data, &res); err != nil {
+		log.Errorf("Decoding JSON. %s", err)
+		return GroupData{}, err
+	}
+
+	if len(res.Response) <= 0 {
+		return GroupData{}, err
+	}
+
+	return res.Response[0], err
 }
 
 func main() {
 	log.Println("Bot starting ...")
 
-	discord, err := discordgo.New("Bot " + DiscordToken)
+	discord, err := discordgo.New("Bot " + discordToken)
 	if err != nil {
 		log.Errorln(err)
 	}
@@ -61,50 +132,44 @@ func main() {
 		return
 	}
 
-	api := vk.New("ru")
+	api = vk.New("ru")
 	vkerr := api.Init(VkToken)
 	if vkerr != nil {
 		log.Errorln(vkerr)
 	}
 
+	group, err := getGroupByID(groupID)
+
+	log.Print(group.Name)
+
 	api.OnNewMessage(func(msg *vk.LPMessage) {
+		user, err := getUser(strconv.FormatInt(msg.FromID, 10))
+		if err != nil {
+			return
+		}
+
+		userName := user.FirstName + " " + user.LastName + " [" + strconv.FormatInt(user.ID, 10) + "]"
+
+		var author discordgo.MessageEmbedAuthor
+		var footer discordgo.MessageEmbedFooter
 		if msg.Flags&vk.FlagMessageOutBox == 0 {
-
-			userData, err := api.CallMethod("users.get", vk.RequestParams{
-				"user_ids": strconv.FormatInt(msg.FromID, 10),
-			})
-			if err == nil {
-				res := UserList{}
-				if err = json.Unmarshal(userData, &res); err != nil {
-					log.Errorf("Decoding JSON. %s", err)
-				}
-
-				log.Print("Response: ")
-				log.Println(res)
-
-				user := res.Response[0]
-
-				message := user.FirstName
-				message += " " + user.LastName
-				message += " [" + user.ID + "]\n"
-				message += msg.Text
-
-				_, err = discord.ChannelMessageSend(ChannelID, message)
-				if err != nil {
-					log.Errorln(err)
-				}
-			} else {
-				log.Errorf("Don't get user: %s", err)
+			author = discordgo.MessageEmbedAuthor{
+				Name:    userName,
+				IconURL: user.Photo50,
 			}
+		} else {
+			author = discordgo.MessageEmbedAuthor{
+				Name:    group.Name,
+				IconURL: group.Photo50,
+			}
+			footer = discordgo.MessageEmbedFooter{Text: "для " + userName, IconURL: user.Photo50}
+		}
 
-			// if msg.Text == "ping" {
-			// 	api.Messages.Send(vk.RequestParams{
-			// 		"peer_id":          strconv.FormatInt(msg.FromID, 10),
-			// 		"message":          "Pong!",
-			// 		"forward_messages": strconv.FormatInt(msg.ID, 10),
-			// 	})
+		embed := discordgo.MessageEmbed{Author: &author, Description: msg.Text, Footer: &footer}
 
-			// }
+		_, err = discord.ChannelMessageSendEmbed(channelID, &embed)
+		if err != nil {
+			log.Errorln(err)
 		}
 	})
 
@@ -133,15 +198,20 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	// If the message is "ping" reply with "Pong!"
-	if m.Content == "ping" {
-		_, err := s.ChannelMessageSend(m.ChannelID, "Pong!")
-		if err != nil {
-			log.Errorln(err)
-		}
-	}
+	if strings.HasPrefix(m.Content, "!ответ") {
+		data := strings.Split(m.Content, " ")
 
-	// If the message is "pong" reply with "Ping!"
-	if m.Content == "pong" {
-		s.ChannelMessageSend(m.ChannelID, "Ping!")
+		if len(data) < 3 {
+			log.Error("No message or profileID")
+			return
+		}
+
+		userID := data[1]
+		message := strings.Join(data[2:], " ")
+
+		api.Messages.Send(vk.RequestParams{
+			"peer_id": userID,
+			"message": message,
+		})
 	}
 }
