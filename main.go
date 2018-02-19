@@ -8,9 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
-	log "github.com/sirupsen/logrus"
+	"github.com/lestrrat/go-file-rotatelogs"
+	"github.com/rifflock/lfshook"
+	"github.com/sirupsen/logrus"
 	"github.com/urShadow/go-vk-api"
 )
 
@@ -49,7 +52,39 @@ var (
 	groupID      string
 )
 
+var log *logrus.Logger
+
+func newLogger() *logrus.Logger {
+	if log != nil {
+		return log
+	}
+
+	path := "/var/log/discord-vk-bot/bot.log"
+	writer, err := rotatelogs.New(
+		path+".%Y%m%d%H%M",
+		rotatelogs.WithLinkName(path),
+		rotatelogs.WithMaxAge(time.Duration(86400)*time.Second),
+		rotatelogs.WithRotationTime(time.Duration(604800)*time.Second),
+	)
+	if err != nil {
+		return log
+	}
+
+	log = logrus.New()
+	log.Hooks.Add(lfshook.NewHook(
+		lfshook.WriterMap{
+			logrus.InfoLevel:  writer,
+			logrus.ErrorLevel: writer,
+		},
+		&logrus.TextFormatter{},
+	))
+
+	return log
+}
+
 func init() {
+	log = newLogger()
+
 	log.Println("Init")
 
 	flag.StringVar(&VkToken, "vk_token", "", "Vk token")
