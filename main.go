@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -55,15 +57,21 @@ func newLogger() *logrus.Logger {
 		return log
 	}
 
-	path := "/var/log/discord-vk-bot/bot.log"
+	err := os.MkdirAll(filepath.Dir(cfg.LogPath), os.ModePerm)
+	if err != nil {
+		fmt.Printf("Create dir for log failed. %q", err)
+		os.Exit(1)
+	}
+
 	writer, err := rotatelogs.New(
-		path+".%Y%m%d%H%M",
-		rotatelogs.WithLinkName(path),
+		cfg.LogPath+".%Y%m%d%H%M",
+		rotatelogs.WithLinkName(cfg.LogPath),
 		rotatelogs.WithMaxAge(time.Duration(86400)*time.Second),
 		rotatelogs.WithRotationTime(time.Duration(604800)*time.Second),
 	)
 	if err != nil {
-		return log
+		fmt.Printf("Logger create failed. %s", err)
+		os.Exit(1)
 	}
 
 	log = logrus.New()
@@ -79,61 +87,8 @@ func newLogger() *logrus.Logger {
 }
 
 func init() {
-	log = newLogger()
 	cfg.Init()
-}
-
-// Get User stuct by user ID
-func getUser(userID string) (User, error) {
-	var err error
-	var userData []byte
-	if userID == "" {
-		userData, err = api.CallMethod("users.get", vk.RequestParams{
-			"fields": "photo_50, from_id",
-		})
-	} else {
-		userData, err = api.CallMethod("users.get", vk.RequestParams{
-			"user_ids": userID,
-			"fields":   "photo_50, from_id",
-		})
-	}
-
-	if err != nil {
-		return User{}, err
-	}
-
-	log.Println(string(userData))
-	res := UserList{}
-	if err = json.Unmarshal(userData, &res); err != nil {
-		log.Errorf("Decoding JSON. %s", err)
-		return User{}, err
-	}
-
-	return res.Response[0], err
-}
-
-func getGroupByID(groupID string) (GroupData, error) {
-	var err error
-	var data []byte
-	data, err = api.CallMethod("groups.getById", vk.RequestParams{
-		"group_id": groupID,
-	})
-	if err != nil {
-		return GroupData{}, err
-	}
-
-	log.Debug(string(data))
-	res := GroupListData{}
-	if err = json.Unmarshal(data, &res); err != nil {
-		log.Errorf("Decoding JSON. %s", err)
-		return GroupData{}, err
-	}
-
-	if len(res.Response) <= 0 {
-		return GroupData{}, err
-	}
-
-	return res.Response[0], err
+	log = newLogger()
 }
 
 func main() {
