@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"os"
 	"os/signal"
 	"strconv"
@@ -10,11 +9,12 @@ import (
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/chelovek/discord-vk-bot/config"
 	log "github.com/sirupsen/logrus"
 	"github.com/urShadow/go-vk-api"
 )
 
-// User type from VK api
+// User пользователь из API ВК
 type User struct {
 	ID        int64  `json:"id"`
 	FirstName string `json:"first_name"`
@@ -23,42 +23,103 @@ type User struct {
 	FromID    int64  `json:"from_id"`
 }
 
-// UserList type from VK api
+// UserList список пользователей
 type UserList struct {
 	Response []User `json:"response"`
 }
 
-// GroupData type from VK API
+// GroupData параметры группы из ВК
 type GroupData struct {
 	ID      int64  `json:"id"`
 	Name    string `json:"name"`
 	Photo50 string `json:"photo_50"`
 }
 
-// GroupListData type from VK API
+// GroupListData Список групп из ВК
 type GroupListData struct {
 	Response []GroupData `json:"response"`
 }
 
-// Variables used for command line parameters
 var (
-	discordToken string
-	VkToken      string
-	channelID    string
-	api          *vk.VK
-	groupID      string
+	api *vk.VK
+	cfg config.Config
 )
 
 func init() {
-	log.Println("Init")
+	cfg.Init()
+}
 
-	flag.StringVar(&VkToken, "vk_token", "", "Vk token")
-	flag.StringVar(&groupID, "vk_groupid", "", "VK group id")
-	flag.StringVar(&discordToken, "discord_token", "", "Discord authentication token")
-	flag.StringVar(&channelID, "discord_channelid", "", "Channel ID in Discord")
-	flag.Parse()
+func main() {
+	log.Println("Bot starting ...")
 
-	log.Println(discordToken)
+	discord, err := discordgo.New("Bot " + cfg.DiscordToken)
+	if err != nil {
+		log.Errorln(err)
+	}
+
+	// Register the messageCreate func as a callback for MessageCreate events.
+	discord.AddHandler(messageCreate)
+
+	// Open a websocket connection to Discord and begin listening.
+	err = discord.Open()
+	if err != nil {
+		log.Errorln("error opening connection,", err)
+		return
+	}
+
+	api = vk.New("ru")
+	vkerr := api.Init(cfg.VkToken)
+	if vkerr != nil {
+		log.Errorln(vkerr)
+	}
+
+	group, err := getGroupByID(cfg.GroupID)
+
+	log.Print(group.Name)
+
+	api.OnNewMessage(func(msg *vk.LPMessage) {
+		user, err := getUser(strconv.FormatInt(msg.FromID, 10))
+		if err != nil {
+			return
+		}
+
+		userName := user.FirstName + " " + user.LastName + " [" + strconv.FormatInt(user.ID, 10) + "]"
+
+		var author discordgo.MessageEmbedAuthor
+		var footer discordgo.MessageEmbedFooter
+		if msg.Flags&vk.FlagMessageOutBox == 0 {
+			author = discordgo.MessageEmbedAuthor{
+				Name:    userName,
+				IconURL: user.Photo50,
+			}
+		} else {
+			author = discordgo.MessageEmbedAuthor{
+				Name:    group.Name,
+				IconURL: group.Photo50,
+			}
+			footer = discordgo.MessageEmbedFooter{Text: "для " + userName, IconURL: user.Photo50}
+		}
+
+		embed := discordgo.MessageEmbed{Author: &author, Description: msg.Text, Footer: &footer}
+
+		_, err = discord.ChannelMessageSendEmbed(cfg.ChannelID, &embed)
+		if err != nil {
+			log.Errorln(err)
+		}
+	})
+
+	// Cleanly close down the Discord session.
+	defer discord.Close()
+
+	go api.RunLongPoll()
+
+	// Wait here until CTRL-C or other term signal is received.
+	log.Println("Bot is now running.  Press CTRL-C to exit.")
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
+	<-sc
+
+	log.Println("Bot finished")
 }
 
 // Get User stuct by user ID
@@ -112,79 +173,6 @@ func getGroupByID(groupID string) (GroupData, error) {
 	}
 
 	return res.Response[0], err
-}
-
-func main() {
-	log.Println("Bot starting ...")
-
-	discord, err := discordgo.New("Bot " + discordToken)
-	if err != nil {
-		log.Errorln(err)
-	}
-
-	// Register the messageCreate func as a callback for MessageCreate events.
-	discord.AddHandler(messageCreate)
-
-	// Open a websocket connection to Discord and begin listening.
-	err = discord.Open()
-	if err != nil {
-		log.Errorln("error opening connection,", err)
-		return
-	}
-
-	api = vk.New("ru")
-	vkerr := api.Init(VkToken)
-	if vkerr != nil {
-		log.Errorln(vkerr)
-	}
-
-	group, err := getGroupByID(groupID)
-
-	log.Print(group.Name)
-
-	api.OnNewMessage(func(msg *vk.LPMessage) {
-		user, err := getUser(strconv.FormatInt(msg.FromID, 10))
-		if err != nil {
-			return
-		}
-
-		userName := user.FirstName + " " + user.LastName + " [" + strconv.FormatInt(user.ID, 10) + "]"
-
-		var author discordgo.MessageEmbedAuthor
-		var footer discordgo.MessageEmbedFooter
-		if msg.Flags&vk.FlagMessageOutBox == 0 {
-			author = discordgo.MessageEmbedAuthor{
-				Name:    userName,
-				IconURL: user.Photo50,
-			}
-		} else {
-			author = discordgo.MessageEmbedAuthor{
-				Name:    group.Name,
-				IconURL: group.Photo50,
-			}
-			footer = discordgo.MessageEmbedFooter{Text: "для " + userName, IconURL: user.Photo50}
-		}
-
-		embed := discordgo.MessageEmbed{Author: &author, Description: msg.Text, Footer: &footer}
-
-		_, err = discord.ChannelMessageSendEmbed(channelID, &embed)
-		if err != nil {
-			log.Errorln(err)
-		}
-	})
-
-	// Cleanly close down the Discord session.
-	defer discord.Close()
-
-	go api.RunLongPoll()
-
-	// Wait here until CTRL-C or other term signal is received.
-	log.Println("Bot is now running.  Press CTRL-C to exit.")
-	sc := make(chan os.Signal, 1)
-	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
-	<-sc
-
-	log.Println("Bot finished")
 }
 
 // This function will be called (due to AddHandler above) every time a new
