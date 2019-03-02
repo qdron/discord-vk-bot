@@ -1,6 +1,6 @@
 # discord-vk-bot
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/chelovek/discord-vk-bot)](https://goreportcard.com/report/github.com/chelovek/discord-vk-bot)
+[![Go Report Card](https://goreportcard.com/badge/github.com/qdron/discord-vk-bot)](https://goreportcard.com/report/github.com/qdron/discord-vk-bot)
 
 Бот для отображения личных сообщений сообощества ВК на канале в Discord.
 
